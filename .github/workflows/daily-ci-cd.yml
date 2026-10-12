@@ -1,0 +1,256 @@
+name: Daily CI and Test Tracker
+
+on:
+  schedule:
+    # 12:04 AM IST = 18:34 UTC on the previous day
+    - cron: "34 18 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main, flow]
+    paths-ignore:
+      - "reports/daily-test-log.md"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-ci-${{ github.repository }}-${{ github.event.repository.default_branch }}
+  cancel-in-progress: false
+
+jobs:
+  test-and-track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Detect projects and run available checks
+        id: checks
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          : > reports/check-summary.txt
+          count=0
+
+          # Maven projects
+          while IFS= read -r file; do
+            dir="$(dirname "$file")"
+            echo "Maven: $dir"
+            if [[ -x "$dir/mvnw" ]]; then
+              (cd "$dir" && ./mvnw --batch-mode --no-transfer-progress clean verify)
+            else
+              (cd "$dir" && mvn --batch-mode --no-transfer-progress clean verify)
+            fi
+            echo "- Maven verify: $dir — PASS" >> reports/check-summary.txt
+            count=$((count + 1))
+          done < <(find . -type d \( -name .git -o -name node_modules -o -name target -o -name .venv \) -prune -o -type f -name pom.xml -print)
+
+          # Gradle projects
+          while IFS= read -r file; do
+            dir="$(dirname "$file")"
+            [[ -f "$dir/pom.xml" ]] && continue
+            echo "Gradle: $dir"
+            if [[ -x "$dir/gradlew" ]]; then
+              (cd "$dir" && ./gradlew test)
+            else
+              (cd "$dir" && gradle test)
+            fi
+            echo "- Gradle test: $dir — PASS" >> reports/check-summary.txt
+            count=$((count + 1))
+          done < <(find . -type d \( -name .git -o -name node_modules -o -name build -o -name .gradle \) -prune -o -type f \( -name build.gradle -o -name build.gradle.kts \) -print)
+
+          # Node.js projects: install using the lockfile and run declared test/lint/build scripts.
+          while IFS= read -r file; do
+            dir="$(dirname "$file")"
+            echo "Node.js: $dir"
+            (
+              cd "$dir"
+              if [[ -f pnpm-lock.yaml ]]; then
+                npm install --global pnpm
+                pnpm install --frozen-lockfile
+                PM=pnpm
+              elif [[ -f yarn.lock ]]; then
+                corepack enable
+                yarn install --immutable
+                PM=yarn
+              elif [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
+                npm ci
+                PM=npm
+              else
+                npm install
+                PM=npm
+              fi
+              has_test="$(node -e "const s=require('./package.json').scripts||{};process.stdout.write(s.test?'yes':'no')")"
+              has_lint="$(node -e "const s=require('./package.json').scripts||{};process.stdout.write(s.lint?'yes':'no')")"
+              has_build="$(node -e "const s=require('./package.json').scripts||{};process.stdout.write(s.build?'yes':'no')")"
+              ran=0
+              if [[ "$has_test" == yes ]]; then "$PM" test; ran=1; fi
+              if [[ "$has_lint" == yes ]]; then "$PM" run lint; ran=1; fi
+              if [[ "$has_build" == yes ]]; then "$PM" run build; ran=1; fi
+              if [[ "$ran" == 0 ]]; then
+                node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+                echo "No test/lint/build script declared; package.json syntax check passed."
+              fi
+            )
+            echo "- Node.js checks: $dir — PASS" >> reports/check-summary.txt
+            count=$((count + 1))
+          done < <(find . -type d \( -name .git -o -name node_modules -o -name .next -o -name dist \) -prune -o -type f -name package.json -print)
+
+          # Python projects
+          while IFS= read -r file; do
+            dir="$(dirname "$file")"
+            echo "Python: $dir"
+            (
+              cd "$dir"
+              if [[ -f requirements.txt ]]; then python -m pip install -r requirements.txt; fi
+              if [[ -f pyproject.toml ]]; then python -m pip install -e .; fi
+              python -m pip install pytest httpx
+              if find . -type d \( -name .git -o -name .venv -o -name __pycache__ \) -prune -o -type f \( -name 'test_*.py' -o -name '*_test.py' \) -print -quit | grep -q .; then
+                python -m pytest -q --junitxml="$GITHUB_WORKSPACE/reports/pytest-$(echo "$dir" | tr '/.' '--').xml"
+              else
+                python -m compileall -q .
+              fi
+            )
+            echo "- Python checks: $dir — PASS" >> reports/check-summary.txt
+            count=$((count + 1))
+          done < <(find . -type d \( -name .git -o -name node_modules -o -name .venv -o -name __pycache__ \) -prune -o -type f \( -name pyproject.toml -o -name requirements.txt \) -print)
+
+          # Plain Java repositories without Maven/Gradle
+          if [[ "$count" == 0 ]] && compgen -G "*.java" > /dev/null; then
+            mkdir -p /tmp/java-classes
+            javac -d /tmp/java-classes ./*.java
+            if [[ -f TestRunner.java ]]; then java -cp /tmp/java-classes TestRunner; fi
+            echo "- Java compile/test-runner smoke check: PASS" >> reports/check-summary.txt
+            count=$((count + 1))
+          fi
+
+          # Docker Compose configuration validation
+          while IFS= read -r file; do
+            dir="$(dirname "$file")"
+            if [[ -f "$dir/.env.example" && ! -f "$dir/.env" ]]; then cp "$dir/.env.example" "$dir/.env"; fi
+            docker compose -f "$file" config --quiet
+            echo "- Docker Compose config: $file — PASS" >> reports/check-summary.txt
+            count=$((count + 1))
+          done < <(find . -type d \( -name .git -o -name node_modules \) -prune -o -type f \( -name docker-compose.yml -o -name compose.yml -o -name compose.yaml \) -print)
+
+          # Documentation/repository smoke check for projects without build manifests.
+          if [[ "$count" == 0 ]]; then
+            python - <<'PY'
+          from pathlib import Path
+          import sys
+          root = Path(".")
+          readme = next((p for p in (root / "README.md", root / "README.rst", root / "README.txt") if p.is_file()), None)
+          if readme is None or not readme.read_text(errors="replace").strip():
+              print("No non-empty README found", file=sys.stderr)
+              sys.exit(1)
+          excluded = {".git", "node_modules", ".venv", "dist", "build"}
+          bad = []
+          for p in root.rglob("*"):
+              if not p.is_file() or any(part in excluded for part in p.parts) or p.stat().st_size > 1_000_000:
+                  continue
+              try:
+                  content = p.read_text()
+              except (UnicodeDecodeError, OSError):
+                  continue
+              if any(marker in content for marker in ("<<<<<<< HEAD", "=======", ">>>>>>> ")):
+                  bad.append(str(p))
+          if bad:
+              print("Possible merge-conflict markers: " + ", ".join(bad), file=sys.stderr)
+              sys.exit(1)
+          print("Repository documentation/integrity smoke check passed.")
+          PY
+            echo "- Repository integrity smoke check — PASS" >> reports/check-summary.txt
+            count=$((count + 1))
+          fi
+
+          cat reports/check-summary.txt
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Mark test/check result
+        if: always()
+        run: |
+          if [[ "${{ steps.checks.outcome }}" == "success" ]]; then
+            echo "STATUS=PASS" >> "$GITHUB_ENV"
+          else
+            echo "STATUS=FAIL" >> "$GITHUB_ENV"
+          fi
+
+      - name: Append daily tracker after successful checks
+        if: steps.checks.outcome == 'success'
+        shell: bash
+        run: |
+          mkdir -p reports
+          touch reports/daily-test-log.md
+          {
+            echo "## $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "- Status: PASS"
+            echo "- Checks executed: $(cat reports/check-summary.txt | wc -l | tr -d ' ')"
+            echo "- Tested commit: ${GITHUB_SHA}"
+            echo "- Branch: ${DEFAULT_BRANCH}"
+            echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            cat reports/check-summary.txt
+            echo
+          } >> reports/daily-test-log.md
+
+      - name: Commit and push tracker
+        if: steps.checks.outcome == 'success'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/daily-test-log.md
+          if git diff --cached --quiet; then
+            echo "No tracker changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: record daily CI checks"
+          git fetch origin "$DEFAULT_BRANCH"
+          git rebase "origin/$DEFAULT_BRANCH"
+          git push origin "HEAD:$DEFAULT_BRANCH"
+
+      - name: Upload test and check reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-ci-reports
+          path: |
+            reports/**
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
+            **/build/test-results/**
+            **/coverage/**
+            **/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Fail workflow if checks failed
+        if: always() && steps.checks.outcome != 'success'
+        run: |
+          echo "One or more project checks failed. Review logs and uploaded artifacts."
+          exit 1
