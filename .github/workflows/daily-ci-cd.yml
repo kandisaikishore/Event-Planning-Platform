@@ -35,7 +35,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -128,7 +128,22 @@ jobs:
             (
               cd "$dir"
               if [[ -f requirements.txt ]]; then python -m pip install -r requirements.txt; fi
-              if [[ -f pyproject.toml ]]; then python -m pip install -e .; fi
+              if [[ -f pyproject.toml ]]; then
+                python - <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("pyproject.toml").read_text())
+          project = data.get("project", {})
+          dependencies = list(project.get("dependencies", []))
+          dependency_groups = data.get("dependency-groups", {})
+          dependencies.extend(dependency_groups.get("dev", []))
+          if dependencies:
+              subprocess.check_call([sys.executable, "-m", "pip", "install", *dependencies])
+          PY
+              fi
               python -m pip install pytest httpx
               if find . -type d \( -name .git -o -name .venv -o -name __pycache__ \) -prune -o -type f \( -name 'test_*.py' -o -name '*_test.py' \) -print -quit | grep -q .; then
                 python -m pytest -q --junitxml="$GITHUB_WORKSPACE/reports/pytest-$(echo "$dir" | tr '/.' '--').xml"
@@ -140,11 +155,16 @@ jobs:
             count=$((count + 1))
           done < <(find . -type d \( -name .git -o -name node_modules -o -name .venv -o -name __pycache__ \) -prune -o -type f \( -name pyproject.toml -o -name requirements.txt \) -print)
 
-          # Plain Java repositories without Maven/Gradle
-          if [[ "$count" == 0 ]] && compgen -G "*.java" > /dev/null; then
+          # Plain Java repositories without Maven/Gradle; include nested source paths and spaces.
+          if [[ "$count" == 0 ]] && find . -type d \( -name .git -o -name node_modules -o -name target \) -prune -o -type f -name '*.java' -print -quit | grep -q .; then
+            mapfile -d '' java_files < <(find . -type d \( -name .git -o -name node_modules -o -name target \) -prune -o -type f -name '*.java' -print0)
             mkdir -p /tmp/java-classes
-            javac -d /tmp/java-classes ./*.java
-            if [[ -f TestRunner.java ]]; then java -cp /tmp/java-classes TestRunner; fi
+            javac -d /tmp/java-classes "${java_files[@]}"
+            if [[ -f TestRunner.java ]]; then
+              java -cp /tmp/java-classes TestRunner
+            elif [[ -f CalculatorTest.java ]]; then
+              java -cp /tmp/java-classes CalculatorTest
+            fi
             echo "- Java compile/test-runner smoke check: PASS" >> reports/check-summary.txt
             count=$((count + 1))
           fi
