@@ -92,14 +92,14 @@ jobs:
               cd "$dir"
               if [[ -f pnpm-lock.yaml ]]; then
                 npm install --global pnpm
-                pnpm install --frozen-lockfile
+                pnpm install --frozen-lockfile --config.dangerouslyAllowAllBuilds=true
                 PM=pnpm
               elif [[ -f yarn.lock ]]; then
                 corepack enable
                 yarn install --immutable
                 PM=yarn
               elif [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
-                npm ci
+                npm ci || npm ci --legacy-peer-deps
                 PM=npm
               else
                 npm install
