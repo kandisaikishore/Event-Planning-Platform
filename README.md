@@ -1,11 +1,51 @@
-<div align="center">
+# Event Planning Platform
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+**An AI Studio application starter for an event-planning experience.**
 
-  <h1>Built with AI Studio</h2>
+## Overview
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+This repository contains the application source and local development setup. This README is intended to help developers and reviewers understand the project, run it locally, and assess its current scope without overstating unverified capabilities.
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Highlights
 
-</div>
+- Event-oriented application interface
+- Local development with npm
+- Configuration for services implemented by the project
+
+## Technology
+
+Node.js · npm · see package.json for frameworks
+
+## Quick start
+
+Prerequisite: a compatible Node.js installation. From a terminal:
+
+```bash
+ git clone https://github.com/saikishore2410/Event-Planning-Platform.git
+ cd Event-Planning-Platform
+ npm install
+# Configure required environment variables
+npm run dev
+```
+
+Configure environment variables locally before launching the app. Use the variable names expected by the current source code, and keep real credentials out of version control.
+
+## Build and validation
+
+```bash
+npm run build
+```
+
+Run any test or lint scripts defined in `package.json`. Review the source and deployment configuration before treating the application as production-ready.
+
+## Configuration and limitations
+
+Verify event creation, booking, scheduling, and notification features in source before advertising them as working.
+
+## Contributing
+
+Issues and focused pull requests are welcome. Include reproduction steps for bugs and describe the validation performed for changes.
+
+## License
+
+No license is specified. Add a `LICENSE` file to define permitted reuse.
