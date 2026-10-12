@@ -197,7 +197,7 @@ jobs:
                   content = p.read_text()
               except (UnicodeDecodeError, OSError):
                   continue
-              if any(marker in content for marker in ("<<<<<<< HEAD", "=======", ">>>>>>> ")):
+              if any(line.strip() == "=======" or line.lstrip().startswith(("<<<<<<< ", ">>>>>>> ")) for line in content.splitlines()):
                   bad.append(str(p))
           if bad:
               print("Possible merge-conflict markers: " + ", ".join(bad), file=sys.stderr)
