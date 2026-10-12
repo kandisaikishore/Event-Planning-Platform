@@ -1,0 +1,26 @@
+name: Repository Integrity Check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check repository is not empty
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(find . -type f -not -path './.git/*' -not -path './.github/workflows/qa.yml' | wc -l)"
+          if [ "$count" -lt 1 ]; then
+            echo "No project files found"
+            exit 1
+          fi
+          echo "Found $count project files"
+          find . -maxdepth 3 -type f -not -path './.git/*' | sort | head -n 200
