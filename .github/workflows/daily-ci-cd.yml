@@ -251,7 +251,7 @@ jobs:
           fi
           git commit -m "chore: record daily CI checks"
           git fetch origin "$DEFAULT_BRANCH"
-          git rebase "origin/$DEFAULT_BRANCH"
+          git rebase --autostash "origin/$DEFAULT_BRANCH"
           git push origin "HEAD:$DEFAULT_BRANCH"
 
       - name: Upload test and check reports
