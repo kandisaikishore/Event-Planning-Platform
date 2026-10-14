@@ -1,0 +1,31 @@
+name: Repository Tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * *"
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: |
+          if [ -f pom.xml ]; then mvn --batch-mode test; elif [ -x ./gradlew ]; then ./gradlew test; else echo "No root Maven/Gradle project detected."; fi
+      - run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -d tests ] || find . -maxdepth 2 -name 'test_*.py' -print -quit | grep -q .; then pip install pytest && pytest -q; else echo "No Python tests found."; fi
+      - run: |
+          if [ -f package.json ]; then if [ -f package-lock.json ]; then npm ci; else npm install; fi; npm test --if-present; npm run build --if-present; else echo "No root package.json found."; fi
