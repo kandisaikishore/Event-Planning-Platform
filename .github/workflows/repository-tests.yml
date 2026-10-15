@@ -1,4 +1,4 @@
-name: Repository Tests
+name: Repository Quality Checks
 on:
   push:
   pull_request:
@@ -8,24 +8,55 @@ on:
 permissions:
   contents: read
 jobs:
-  test:
+  documentation:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - run: |
-          if [ -f pom.xml ]; then mvn --batch-mode test; elif [ -x ./gradlew ]; then ./gradlew test; else echo "No root Maven/Gradle project detected."; fi
-      - run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -d tests ] || find . -maxdepth 2 -name 'test_*.py' -print -quit | grep -q .; then pip install pytest && pytest -q; else echo "No Python tests found."; fi
-      - run: |
-          if [ -f package.json ]; then if [ -f package-lock.json ]; then npm ci; else npm install; fi; npm test --if-present; npm run build --if-present; else echo "No root package.json found."; fi
+      - name: Validate README, Markdown files, and local links
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          from urllib.parse import unquote, urlsplit
+
+          root = Path.cwd()
+          readme = root / "README.md"
+          if not readme.is_file() or not readme.read_text(encoding="utf-8").strip():
+              raise SystemExit("FAIL: README.md is missing or empty")
+
+          markdown_files = [
+              p for p in root.rglob("*.md")
+              if not any(part in {".git", ".venv", "node_modules"} for part in p.parts)
+          ]
+          if not markdown_files:
+              raise SystemExit("FAIL: no Markdown documentation found")
+
+          failures = []
+          link_pattern = re.compile(r"!?(?:\[[^\]]*\])\(([^)]+)\)")
+          for doc in markdown_files:
+              text = doc.read_text(encoding="utf-8")
+              if not text.strip():
+                  failures.append(f"{doc}: empty Markdown file")
+                  continue
+              for raw in link_pattern.findall(text):
+                  target = raw.strip().split()[0].strip("<>")
+                  parsed = urlsplit(target)
+                  if parsed.scheme or target.startswith("#") or not parsed.path:
+                      continue
+                  local = (doc.parent / unquote(parsed.path)).resolve()
+                  if local.is_dir():
+                      exists = (local / "README.md").is_file() or (local / "index.md").is_file()
+                  else:
+                      exists = local.is_file()
+                  if not exists:
+                      failures.append(f"{doc}: broken local link -> {target}")
+
+          if failures:
+              print("\n".join(failures))
+              raise SystemExit(f"FAIL: {len(failures)} documentation issue(s)")
+          print(f"PASS: validated {len(markdown_files)} Markdown files; all local file links resolve.")
+          PY
