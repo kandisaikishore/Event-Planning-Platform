@@ -1,0 +1,75 @@
+name: Repository quality gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect manifests
+        id: detect
+        shell: bash
+        run: |
+          [[ ! -f package.json ]] || echo "node=true" >> "$GITHUB_OUTPUT"
+          [[ ! -f pom.xml && ! -f build.gradle && ! -f build.gradle.kts && ! -f gradlew ]] || echo "java=true" >> "$GITHUB_OUTPUT"
+          [[ ! -f requirements.txt && ! -f pyproject.toml && ! -f setup.py ]] || echo "python=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.node == 'true'
+        with:
+          node-version: '22'
+      - name: Validate and install Node project
+        if: steps.detect.outputs.node == 'true'
+        shell: bash
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+          if [[ -f package-lock.json ]]; then npm ci
+          elif [[ -f pnpm-lock.yaml ]]; then corepack enable && pnpm install --frozen-lockfile
+          elif [[ -f yarn.lock ]]; then corepack enable && yarn install --immutable
+          else npm install --package-lock=false; fi
+      - name: Run declared Node checks
+        if: steps.detect.outputs.node == 'true'
+        shell: bash
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.lint ? 0 : 1)"; then npm run lint; else echo "No lint script declared."; fi
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then npm test; else echo "No test script declared; tests were not run."; fi
+          if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then npm run build; else echo "No build script declared."; fi
+      - uses: actions/setup-python@v5
+        if: steps.detect.outputs.python == 'true'
+        with:
+          python-version: '3.12'
+      - name: Run Python checks
+        if: steps.detect.outputs.python == 'true'
+        shell: bash
+        run: |
+          python -m compileall -q .
+          if [[ -f requirements.txt ]]; then python -m pip install -r requirements.txt; fi
+          if [[ -f pyproject.toml || -f setup.py ]]; then python -m pip install -e .; fi
+          python -m pip install pytest
+          if find . -type f \( -name 'test_*.py' -o -name '*_test.py' \) | grep -q .; then python -m pytest -q; else echo "No Python test files discovered."; fi
+      - uses: actions/setup-java@v4
+        if: steps.detect.outputs.java == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Maven tests
+        if: steps.detect.outputs.java == 'true' && hashFiles('pom.xml') != ''
+        run: mvn -B -ntp test
+      - name: Gradle tests
+        if: steps.detect.outputs.java == 'true' && (hashFiles('build.gradle') != '' || hashFiles('build.gradle.kts') != '' || hashFiles('gradlew') != '')
+        shell: bash
+        run: |
+          if [[ -f ./gradlew ]]; then chmod +x ./gradlew && ./gradlew test --no-daemon
+          elif command -v gradle >/dev/null; then gradle test --no-daemon
+          else echo "Gradle project detected without wrapper/system Gradle"; exit 1; fi
